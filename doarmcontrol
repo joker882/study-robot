@@ -1,0 +1,590 @@
+
+int DoArmControl()
+{
+	int iJoint,i;
+	static short ArmMotorDriveMode[6] = {258,258,258,258,258,258};
+	static short SensorUseIndex[6]={0,0,0,0,0,0};
+	static int iController = -1;
+	static int calc_orin_count = 0;
+	static int PaulDelayCnt = 0;
+	static int velinit[ARMDOF]={TRUE,TRUE,TRUE,TRUE,TRUE,TRUE};
+	static int HallFuseFlag[ARMDOF]={TRUE,TRUE,TRUE,TRUE,TRUE,TRUE};
+	static float ARMENDFLIMIT = 80.0f;
+	static float ARMTORQUELIMIT = 100.0f;
+	static float ARMPWMLIMIT = 600.0f;
+	static float JOINTMAXVEL = 10.0f;
+	static float Fsensitive[2]={20.0f,2.0f};
+	static float Kimp[6]={1000.0f,1000.0f,1000.0f,100.0f,100.0f,100.0f};
+	static float Bimp[6]={200.0f,200.0f,200.0f,5.0f,5.0f,5.0f};
+	static float Mimp[6]={15.0f,15.0f,15.0f,0.5f,0.5f,0.5f};
+	static float SP = 0.2;
+	static float Tacc[PLANDOF]={0.08,0.08,0.08,0.08,0.08,0.08};
+	static float MAX_STEP[PLANDOF]={2.0f,2.0f,2.0f,2.0f,2.0f,2.0f};
+	static int IsGravityCompOn = 0;
+   	static float posFl[PLANDOF];
+	float trajRef[3*PLANDOF];
+	float FusedResult[2],PosMReFused[ARMDOF],PosJRe[ARMDOF],HallFusedResult[2];
+	float JointVelocity[ARMDOF];
+	float pwm[ARMDOF];
+	static float massBody[ARMDOF]={2.8079033f,3.0661232f,2.7355598f,2.4955463f,2.7355598f,1.1059815f};
+	static float rcBody[3][ARMDOF]={{0.0001201738f,-0.17354338f,0.052276441f,0.000011046107f,0.00017565227f,0.00013563228f},{0.00039647715f,0.00012282151f,-0.00017565227f,0.019224439f,0.052276441f,0.0030660317f},{0.133122032f,0.0010135237f,0.00086468999f,0.24803823f,0.00086468999f,0.13993467f}};
+	static float IxyzBody[ARMDOF][9]={{0.014206622f,-0.000009836939f,-0.000026472976f,-0.000009836939f,0.013906413f,-0.000070473868f,-0.000026472976f,-0.000070473868f,0.0061076747f},
+							{0.0099757354f,0.000031913763f,-0.017021042f,0.000031913763f,0.082111935f,0.000004255271f,-0.017021042f,0.000004255271f,0.078416064f},
+							{0.0059996495f,-0.000019347616f,0.00014092584f,-0.000019347616f,0.01374338f,0.000013704862f,0.00014092584f,0.000013704862f,0.013490113f},
+							{0.02867862f,0.0000055301544f,0.000047795422f,0.0000055301544f,0.02792204f,-0.0046140068f,0.000047795422f,-0.0046140068f,0.0052736756f},
+							{0.01374338f,0.000019347616f,-0.000013704862f,0.000019347616f,0.0059996495f,0.00014092584f,-0.000013704862f,0.00014092584f,0.013490113f},
+							{0.001614945f,-0.000006129459f,0.000000088448491f,-0.000006129459f,0.0013807342f,-0.000036767309f,0.000000088448491f,-0.000036767309f,0.0018650625f}};
+	static float massload=2.50f;
+	static float rcload[3]={0.0f,0.0f,0.115f};
+	static float Iload[3][3]={{0.01f,0.0f,0.0f},{0.0f,0.01f,0.0f},{0.0f,0.0f,0.01f}};
+	static float TorK[ARMDOF] = {0.028653f,0.02822f,0.011835f,0.011835f,0.0135f,0.0135f};
+	static float TorB[ARMDOF] = {188.0,-150.0,-30.0,500.0,-62.0,93.0};
+	float JntTor[ARMDOF],JntTorRaw[ARMDOF];
+
+	float thetam[ARMDOF],InertiaM[ARMDOF][ARMDOF],ArmGravity[ARMDOF];
+	static float qerr[ARMDOF]={0.0f,0.0f,0.0f,0.0f,0.0f,0.0f};
+	float dqerr[ARMDOF],xerr[ARMDOF],dxerr[ARMDOF];
+	/*Parameters for position controller*/
+	static float FcPos[ARMDOF]={10.0f,10.0f,10.0f,10.0f,10.0f,10.0f};
+	static float FmuPos[ARMDOF]={20.0f,20.0f,20.0f,20.0f,20.0f,20.0f};
+	static float KpPosJoint[ARMDOF]={800.0,800.0,800.0,800.0,800.0,800.0};
+	static float KdPosJoint[ARMDOF]={700.0,700.0,700.0,700.0,700.0,700.0};
+
+	/*Parameters for impedance controller*/
+	float ArmJacin0[TaskDOF][ARMDOF],ArmJacT[ARMDOF][TaskDOF],ArmTaoJ[ARMDOF],ArmEndForce[TaskDOF];
+	static float GraviCoeff[ARMDOF]={1.0f,1.0f,1.0f,1.0f,1.0f,1.0f};
+	static float FcImp[ARMDOF]={10.0f,10.0f,10.0f,10.0f,10.0f,10.0f};
+	static float FmuImp[ARMDOF]={20.0f,20.0f,20.0f,20.0f,20.0f,20.0f};
+	static float KtaoJnt[ARMDOF] = {0.5f,0.5f,0.5f,2.0f,2.0f,2.0f};
+	static float KpImpJoint[ARMDOF]={2000.0,2000.0,2000.0,3000.0,3000.0,3000.0};
+	static float KdImpJoint[ARMDOF]={250.0,250.0,250.0,500.0,500.0,500.0};
+	static float ZeroTorqueKtao[ARMDOF]={1.5f,1.5f,3.0f,20.0f,10.0f,30.0f};
+	static float ThetaOffset[ARMDOF]={0.0,0.0,0.0,0.0,0.0,0.0};
+	float thetad[ARMDOF],dthetad[ARMDOF];
+	float ArmPosRe[3],ArmRa[3][3];
+
+	for(iJoint=0;iJoint<ARMDOF;iJoint++){
+		JntTor[iJoint] = TorK[iJoint]*(ArmRaw.joint[ARMDOF-iJoint-1].RawTorqueChB - ArmRaw.joint[ARMDOF-iJoint-1].RawTorqueChA + TorB[iJoint]);
+
+		if(SensorUseIndex[iJoint] == 0){
+			ArmJointPositionCal(iJoint,&CaliFlag[iJoint],FusedResult);
+			PosMReFused[iJoint] = FusedResult[0];
+			PosJRe[iJoint] = FusedResult[1];
+		}else if(SensorUseIndex[iJoint] == 1){
+			ArmJointRdcPositionCal(iJoint,ThetaOffset[iJoint],FusedResult);
+			PosMReFused[iJoint] = FusedResult[0];
+			PosJRe[iJoint] = FusedResult[1];
+		}else if(SensorUseIndex[iJoint] == 2){
+			ArmJointHallPositionCal(iJoint,HallFuseFlag,HallFusedResult);
+			HallFuseFlag[iJoint] = FALSE;
+			PosMReFused[iJoint] = HallFusedResult[0];
+			PosJRe[iJoint] = HallFusedResult[1];
+		}else if(SensorUseIndex[iJoint] == 4){
+			ArmJointHallOnlyPositionCal(iJoint,ThetaOffset[iJoint],HallFusedResult);
+			PosMReFused[iJoint] = HallFusedResult[0];
+			PosJRe[iJoint] = HallFusedResult[1];
+		}
+
+		JointVelocity[iJoint] = CalJointVelocity(velinit[iJoint],TS,&jointvelmid[iJoint],PosMReFused[iJoint]);
+		velinit[iJoint] = FALSE;
+		thetam[iJoint] = PosMReFused[iJoint]*0.01745329f;
+
+		ArmSense.joint[ARMDOF-iJoint-1].JointPosition = PosJRe[iJoint];
+		ArmSense.joint[ARMDOF-iJoint-1].MotorPosition = PosMReFused[iJoint];
+		ArmSense.joint[ARMDOF-iJoint-1].JointVelocity = (JointVelocity[iJoint]);
+	}
+	if(IsGravityCompOn > 0){
+		GravityCompensation(rcBody,massBody,massload,rcload,thetam,ArmGravity);
+	}else{
+		for(i=0;i<ARMDOF;i++){
+			ArmGravity[i] = 0.0f;
+		}
+	}
+
+	if(PaulDelayCnt > 23){
+		PaulDelayCnt = 51;
+		for(iJoint=0;iJoint<ARMDOF;iJoint++){
+			posFl[iJoint] = ArmTarget.joint[ARMDOF-iJoint-1].DesiredPosition;
+			MAX_STEP[iJoint] = JOINTMAXVEL*SP;
+		}
+	}else{
+		for(iJoint=0;iJoint<ARMDOF;iJoint++){
+			MAX_STEP[iJoint] = 0.0f*SP;
+		}
+	}
+	
+
+/*	if(calc_orin_count<50){
+		calc_orin_count++;
+		g_armInit = TRUE;
+	}
+*/
+	if(iController != ArmTarget.Controller)	// Changed Controller.
+	{
+		calc_orin_count = 0;			
+		iController = ArmTarget.Controller;
+		g_armInit = TRUE;
+		for(iJoint=0;iJoint<ARMDOF;iJoint++){
+			posFl[iJoint] = PosMReFused[iJoint];
+		}
+	}
+
+	if(g_armInit==TRUE){
+		PaulDelayCnt = 0;
+		for(iJoint=0;iJoint<ARMDOF;iJoint++){
+			posFl[iJoint] = PosMReFused[iJoint];
+		}
+	}else{
+		PaulDelayCnt++;
+	}
+
+	reference_trajectory(g_armInit,TS,SP,Tacc,&armref,MAX_STEP,PosMReFused,posFl,trajRef);
+	g_armInit=FALSE;
+
+
+	for(iJoint=0;iJoint<ARMDOF;iJoint++){
+		JntTorRaw[iJoint] = JntTor[iJoint] - GraviCoeff[iJoint]*ArmGravity[iJoint];
+		ArmTaoJ[iJoint] = ArmJointTorqueFilter(iJoint,&JntTorRaw[iJoint]);
+
+		thetad[iJoint] = *(trajRef+iJoint);
+		dthetad[iJoint] = *(trajRef+iJoint+PLANDOF);
+
+		ArmSense.joint[ARMDOF-iJoint-1].JointTorque = (ArmTaoJ[iJoint]);
+		ArmSense.joint[ARMDOF-iJoint-1].DesiredAngle = posFl[iJoint];
+		ArmSense.joint[ARMDOF-iJoint-1].DesiredAngle2ms = thetad[iJoint];////thetad[iJoint];
+	}
+	CalJacMtrx(thetam,ArmJacin0[0]);
+	TransposeMtrx(ArmJacin0[0],TaskDOF,ARMDOF,ArmJacT[0]);
+	CalInertiaMtrx(massBody,rcBody,IxyzBody,massload,rcload,Iload,thetam,InertiaM);
+	ArmEndForceCal(ArmJacin0,ArmJacT,InertiaM,ArmTaoJ,ArmEndForce);
+	CalArmEndPosandOrient(thetam,ArmPosRe,ArmRa[0]);
+
+	ArmSense.joint[6].JointPosition = ArmEndForce[0];
+	ArmSense.joint[6].JointTorque = ArmEndForce[1];
+	ArmSense.joint[6].MotorPosition = ArmEndForce[2];
+	ArmSense.joint[6].MotorCurrent = ArmEndForce[3];
+	ArmSense.joint[6].JointVelocity = ArmEndForce[4];
+	ArmSense.joint[6].DesiredAngle = ArmEndForce[5];
+
+	ArmSense.end_pos[0] = ArmPosRe[0]*1000.0;
+	ArmSense.end_pos[1] = ArmPosRe[1]*1000.0;
+	ArmSense.end_pos[2] = ArmPosRe[2]*1000.0; 
+
+	// Arm Motor M48V Power Control.
+	DexAGetSysCtrl(&SysCtrl);
+	if (SysCtrl.Command == SYSCTRL_ARMOTOR_PWRON)
+	{
+		if (SysCtrl.Status == SYSCTRL_STATUS_NEW)
+		{
+			SysSchedule.iArmPowerCtrl = 1;
+
+			SysCtrl.Status = SYSCTRL_STATUS_DONE;
+
+			SysCtrl.Command = 0;
+
+			DexAUpdateSysCtrl(&SysCtrl);
+		}
+	}
+	else if(SysCtrl.Command == SYSCTRL_ARMOTOR_PWROFF)
+	{
+		if (SysCtrl.Status == SYSCTRL_STATUS_NEW)
+		{
+			SysSchedule.iArmPowerCtrl = 0;
+
+			SysCtrl.Status = SYSCTRL_STATUS_DONE;
+
+			SysCtrl.Command = 0;
+
+			DexAUpdateSysCtrl(&SysCtrl);
+		}
+	} 
+	// End Arm Motor M48V Power Control.
+	
+	// Arm Motor M48V Power Control. at ARM Controller
+	if (SysSchedule.iArmPowerCtrl!=1)
+	{
+		SysSchedule.iArmController = CONTROLLER_RESET;////CONTROLLER_POSITION;
+	}
+//	else
+//	{
+//		SysSchedule.iArmController = CONTROLLER_RESET;
+//	}
+				
+
+	switch(SysSchedule.iArmController)
+	{
+/*		case CONTROLLER_PLATFORM_DIRECT:			// Direct Control by Platform.
+			DexAGetHostArmControl(&ArmControl);		// for debug.
+			break;
+		case CONTROLLER_DIRECT:						// Default Direct Controller.
+			ArmDirectController();
+			break;
+*/		case CONTROLLER_POSITION:					// Default PD Position Controller.
+			ArmPositionController(ARMPWMLIMIT,KpPosJoint,KdPosJoint,FmuPos,FcPos,ArmGravity,PosMReFused,JointVelocity,trajRef,pwm,qerr,dqerr);
+			iArmControllerlst = CONTROLLER_POSITION;
+
+			jntDTO.xStates[0] = 0.0f;
+			jntDTO.xStates[1] = 0.0f;
+			jntDTO.DTOpos = 0.0f;
+			jntDTO.DTOvel = 0.0f;
+			jntDTO.DTOacc = 0.0f;
+			jntDTO.jointdeformation = 0.0f;
+			jntDTO.ZfInitPos = trajRef[4]*0.01745329f;
+
+
+			if(ArmMotorDriveMode[5] == 258){
+				ArmControl.joint[0].ModeCtrl = 258;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[0].MotPWM = (int)(pwm[5]);
+			}else if(ArmMotorDriveMode[5] == 257){
+				ArmControl.joint[0].ModeCtrl = 257;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[0].MotPWM = (int)(pwm[5]);
+			}else{
+				ArmControl.joint[0].ModeCtrl = ArmMotorDriveMode[5];/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[0].MotPWM = 0;
+			}
+
+			if(ArmMotorDriveMode[4] == 258){
+				ArmControl.joint[1].ModeCtrl = 258;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[1].MotPWM = (int)(-pwm[4]);
+			}else if(ArmMotorDriveMode[4] == 257){
+				ArmControl.joint[1].ModeCtrl = 257;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[1].MotPWM = (int)(pwm[4]);
+			}else{
+				ArmControl.joint[1].ModeCtrl = ArmMotorDriveMode[4];/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[1].MotPWM = 0;
+			}
+
+			if(ArmMotorDriveMode[3] == 258){
+				ArmControl.joint[2].ModeCtrl = 258;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[2].MotPWM = (int)(-pwm[3]);
+			}else if(ArmMotorDriveMode[3] == 257){
+				ArmControl.joint[2].ModeCtrl = 257;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[2].MotPWM = (int)(pwm[3]);
+			}else{
+				ArmControl.joint[2].ModeCtrl = ArmMotorDriveMode[3];/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[2].MotPWM = 0;
+			}
+
+			if(ArmMotorDriveMode[2] == 258){
+				ArmControl.joint[3].ModeCtrl = 258;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[3].MotPWM = (int)(-pwm[2]);
+			}else if(ArmMotorDriveMode[2] == 257){
+				ArmControl.joint[3].ModeCtrl = 257;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[3].MotPWM = (int)(pwm[2]);
+			}else{
+				ArmControl.joint[3].ModeCtrl = ArmMotorDriveMode[2];/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[3].MotPWM = 0;
+			}
+			
+			if(ArmMotorDriveMode[1] == 258){
+				ArmControl.joint[4].ModeCtrl = 258;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[4].MotPWM = (int)(pwm[1]);
+			}else if(ArmMotorDriveMode[1] == 257){
+				ArmControl.joint[4].ModeCtrl = 257;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[4].MotPWM = (int)(pwm[1]);
+			}else{
+				ArmControl.joint[4].ModeCtrl = ArmMotorDriveMode[1];/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[4].MotPWM = 0;
+			}
+			
+			if(ArmMotorDriveMode[0] == 258){
+				ArmControl.joint[5].ModeCtrl = 258;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[5].MotPWM = (int)(pwm[0]);
+			}else if(ArmMotorDriveMode[0] == 257){
+				ArmControl.joint[5].ModeCtrl = 257;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[5].MotPWM = (int)(pwm[0]);
+			}else{
+				ArmControl.joint[5].ModeCtrl = ArmMotorDriveMode[0];/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[5].MotPWM = 0;
+			}
+
+			ArmSense.joint[5].MotorCurrent = pwm[0];
+			ArmSense.joint[4].MotorCurrent = pwm[1];
+			ArmSense.joint[3].MotorCurrent = pwm[2];
+			ArmSense.joint[2].MotorCurrent = pwm[3];
+			ArmSense.joint[1].MotorCurrent = pwm[4];
+			ArmSense.joint[0].MotorCurrent = pwm[5];
+
+			// 2020-09-25
+			jntDTO.xStates[0] = 0.0f;
+			jntDTO.xStates[1] = 0.0f;
+			jntDTO.DTOpos = 0.0f;
+			jntDTO.DTOvel = 0.0f;
+			jntDTO.DTOacc = 0.0f;
+			jntDTO.jointdeformation = 0.0f;
+			break;
+		case CONTROLLER_IMPEDANCE:					// Default PI Force Controller.
+		case CONTROLLER_USER1:						// User Conteoller 1.
+			ArmImpedanceController(SysSchedule.iArmController,ARMENDFLIMIT,ARMTORQUELIMIT,ARMPWMLIMIT,Fsensitive,Kimp,Bimp,Mimp,KtaoJnt,KpImpJoint,KdImpJoint,FmuImp,FcImp,ArmGravity,PosMReFused,JointVelocity,thetad,dthetad,ArmTaoJ,ArmEndForce,pwm,xerr,dxerr);
+			iArmControllerlst = SysSchedule.iArmController;
+
+			for(iJoint=0;iJoint<6;iJoint++){
+				qerr[iJoint] = xerr[iJoint]*180.0/PI;
+			}
+
+			if(ArmMotorDriveMode[5] == 258){
+				ArmControl.joint[0].ModeCtrl = 258;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[0].MotPWM = (int)(pwm[5]);
+			}else if(ArmMotorDriveMode[5] == 257){
+				ArmControl.joint[0].ModeCtrl = 257;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[0].MotPWM = (int)(pwm[5]);
+			}else{
+				ArmControl.joint[0].ModeCtrl = ArmMotorDriveMode[5];/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[0].MotPWM = 0;
+			}
+
+			if(ArmMotorDriveMode[4] == 258){
+				ArmControl.joint[1].ModeCtrl = 258;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[1].MotPWM = (int)(-pwm[4]);
+			}else if(ArmMotorDriveMode[4] == 257){
+				ArmControl.joint[1].ModeCtrl = 257;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[1].MotPWM = (int)(pwm[4]);
+			}else{
+				ArmControl.joint[1].ModeCtrl = ArmMotorDriveMode[4];/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[1].MotPWM = 0;
+			}
+
+			if(ArmMotorDriveMode[3] == 258){
+				ArmControl.joint[2].ModeCtrl = 258;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[2].MotPWM = (int)(-pwm[3]);
+			}else if(ArmMotorDriveMode[3] == 257){
+				ArmControl.joint[2].ModeCtrl = 257;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[2].MotPWM = (int)(pwm[3]);
+			}else{
+				ArmControl.joint[2].ModeCtrl = ArmMotorDriveMode[3];/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[2].MotPWM = 0;
+			}
+
+			if(ArmMotorDriveMode[2] == 258){
+				ArmControl.joint[3].ModeCtrl = 258;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[3].MotPWM = (int)(-pwm[2]);
+			}else if(ArmMotorDriveMode[2] == 257){
+				ArmControl.joint[3].ModeCtrl = 257;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[3].MotPWM = (int)(pwm[2]);
+			}else{
+				ArmControl.joint[3].ModeCtrl = ArmMotorDriveMode[2];/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[3].MotPWM = 0;
+			}
+			
+			if(ArmMotorDriveMode[1] == 258){
+				ArmControl.joint[4].ModeCtrl = 258;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[4].MotPWM = (int)(pwm[1]);
+			}else if(ArmMotorDriveMode[1] == 257){
+				ArmControl.joint[4].ModeCtrl = 257;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[4].MotPWM = (int)(pwm[1]);
+			}else{
+				ArmControl.joint[4].ModeCtrl = ArmMotorDriveMode[1];/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[4].MotPWM = 0;
+			}
+			
+			if(ArmMotorDriveMode[0] == 258){
+				ArmControl.joint[5].ModeCtrl = 258;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[5].MotPWM = (int)(pwm[0]);
+			}else if(ArmMotorDriveMode[0] == 257){
+				ArmControl.joint[5].ModeCtrl = 257;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[5].MotPWM = (int)(pwm[0]);
+			}else{
+				ArmControl.joint[5].ModeCtrl = ArmMotorDriveMode[0];/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[5].MotPWM = 0;
+			}
+
+			ArmSense.joint[5].MotorCurrent = pwm[0];
+			ArmSense.joint[4].MotorCurrent = pwm[1];
+			ArmSense.joint[3].MotorCurrent = pwm[2];
+			ArmSense.joint[2].MotorCurrent = pwm[3];
+			ArmSense.joint[1].MotorCurrent = pwm[4];
+			ArmSense.joint[0].MotorCurrent = pwm[5];
+
+			break;
+		case CONTROLLER_USER2:						// ZeroJointTorqueControl for Arm Calibration.
+			JointZeroTorqueController(ARMPWMLIMIT, ZeroTorqueKtao,ArmGravity,ArmTaoJ,pwm);
+			iArmControllerlst = SysSchedule.iArmController;
+
+			if(ArmMotorDriveMode[5] == 258){
+				ArmControl.joint[0].ModeCtrl = 258;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[0].MotPWM = (int)(pwm[5]);
+			}else if(ArmMotorDriveMode[5] == 257){
+				ArmControl.joint[0].ModeCtrl = 257;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[0].MotPWM = (int)(pwm[5]);
+			}else{
+				ArmControl.joint[0].ModeCtrl = ArmMotorDriveMode[5];/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[0].MotPWM = 0;
+			}
+
+			if(ArmMotorDriveMode[4] == 258){
+				ArmControl.joint[1].ModeCtrl = 258;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[1].MotPWM = (int)(-pwm[4]);
+			}else if(ArmMotorDriveMode[4] == 257){
+				ArmControl.joint[1].ModeCtrl = 257;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[1].MotPWM = (int)(pwm[4]);
+			}else{
+				ArmControl.joint[1].ModeCtrl = ArmMotorDriveMode[4];/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[1].MotPWM = 0;
+			}
+
+			if(ArmMotorDriveMode[3] == 258){
+				ArmControl.joint[2].ModeCtrl = 258;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[2].MotPWM = (int)(-pwm[3]);
+			}else if(ArmMotorDriveMode[3] == 257){
+				ArmControl.joint[2].ModeCtrl = 257;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[2].MotPWM = (int)(pwm[3]);
+			}else{
+				ArmControl.joint[2].ModeCtrl = ArmMotorDriveMode[3];/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[2].MotPWM = 0;
+			}
+
+			if(ArmMotorDriveMode[2] == 258){
+				ArmControl.joint[3].ModeCtrl = 258;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[3].MotPWM = (int)(-pwm[2]);
+			}else if(ArmMotorDriveMode[2] == 257){
+				ArmControl.joint[3].ModeCtrl = 257;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[3].MotPWM = (int)(pwm[2]);
+			}else{
+				ArmControl.joint[3].ModeCtrl = ArmMotorDriveMode[2];/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[3].MotPWM = 0;
+			}
+			
+			if(ArmMotorDriveMode[1] == 258){
+				ArmControl.joint[4].ModeCtrl = 258;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[4].MotPWM = (int)(pwm[1]);
+			}else if(ArmMotorDriveMode[1] == 257){
+				ArmControl.joint[4].ModeCtrl = 257;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[4].MotPWM = (int)(pwm[1]);
+			}else{
+				ArmControl.joint[4].ModeCtrl = ArmMotorDriveMode[1];/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[4].MotPWM = 0;
+			}
+			
+			if(ArmMotorDriveMode[0] == 258){
+				ArmControl.joint[5].ModeCtrl = 258;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[5].MotPWM = (int)(pwm[0]);
+			}else if(ArmMotorDriveMode[0] == 257){
+				ArmControl.joint[5].ModeCtrl = 257;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[5].MotPWM = (int)(pwm[0]);
+			}else{
+				ArmControl.joint[5].ModeCtrl = ArmMotorDriveMode[0];/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+				ArmControl.joint[5].MotPWM = 0;
+			}
+
+			ArmSense.joint[5].MotorCurrent = pwm[0];
+			ArmSense.joint[4].MotorCurrent = pwm[1];
+			ArmSense.joint[3].MotorCurrent = pwm[2];
+			ArmSense.joint[2].MotorCurrent = pwm[3];
+			ArmSense.joint[1].MotorCurrent = pwm[4];
+			ArmSense.joint[0].MotorCurrent = pwm[5];
+			
+			break;
+		default:									// Include CONTROLLER_RESET.
+		
+			for(i=0;i<PLANDOF;i++){
+				MAX_STEP[i] = JOINTMAXVEL*SP;
+			}
+
+			DexAGetHandCmds(&HandCmds);
+
+				if (HandCmds.hcmd_status != PLATFORM_STATE_CMD_WAS_DONE)
+				{
+
+					switch(HandCmds.hcmd_word)
+					{
+						case PLATFORM_CMD_CONFIG_ARM_PARA: //Send Arm Para
+							LocalTransfer((char *)HandCmds.hcmd_data,(char *)&g_sArmPars,sizeof(SPX_DSP_ARM_PARS));
+							HandCmds.hcmd_status = PLATFORM_STATE_CMD_WAS_DONE;
+
+							Fsensitive[0] = g_sArmPars.FextLimit[0];
+							Fsensitive[1] = g_sArmPars.FextLimit[1];
+							ARMENDFLIMIT = g_sArmPars.ArmForceLimit;
+							ARMTORQUELIMIT = g_sArmPars.ArmTorqueLimit;
+							ARMPWMLIMIT = g_sArmPars.ArmPWMLimit;
+							JOINTMAXVEL = g_sArmPars.JointMaxVel;
+							SP = g_sArmPars.SP;
+							IsGravityCompOn = g_sArmPars.IsGravityCompOn;
+							for(iJoint=0;iJoint<ARMDOF;iJoint++){
+								ArmMotorDriveMode[iJoint] = (short)(g_sArmPars.ModeCtrl[iJoint]);
+								Mimp[iJoint] = g_sArmPars.ArmMimpXYZ[iJoint];
+								Bimp[iJoint] = g_sArmPars.ArmBimpXYZ[iJoint];
+								Kimp[iJoint] = g_sArmPars.ArmKimpXYZ[iJoint];
+								KpPosJoint[iJoint] = g_sArmPars.KpPos[iJoint];
+								KdPosJoint[iJoint] = g_sArmPars.KdPos[iJoint];
+								FcPos[iJoint] = g_sArmPars.FcPos[iJoint];
+								FmuPos[iJoint] = g_sArmPars.FmuPos[iJoint];
+								KpImpJoint[iJoint] = g_sArmPars.KpImp[iJoint];
+								KdImpJoint[iJoint] = g_sArmPars.KdImp[iJoint];
+								FcImp[iJoint] = g_sArmPars.FcImp[iJoint];
+								FmuImp[iJoint] = g_sArmPars.FmuImp[iJoint];
+								KtaoJnt[iJoint] = g_sArmPars.KtaoJnt[iJoint];
+								ZeroTorqueKtao[iJoint] = g_sArmPars.ZeroTorqueKtao[iJoint];
+								Tacc[iJoint] = g_sArmPars.ArmAcc;
+								MAX_STEP[iJoint] = JOINTMAXVEL*SP;
+
+								SensorUseIndex[iJoint] = (short)(g_sArmPars.SensorUseIndex[iJoint]);
+								ThetaOffset[iJoint] = g_sArmPars.ThetaOffset[iJoint];
+							}
+							DexAUpdateHandCmds(&HandCmds);
+						break;
+						case PLATFORM_CMD_GET_ARM_PARA:  //Get Arm Para
+							g_sArmPars.FextLimit[0]=Fsensitive[0];
+							g_sArmPars.FextLimit[1]=Fsensitive[1];
+							g_sArmPars.ArmForceLimit=ARMENDFLIMIT;
+							g_sArmPars.ArmTorqueLimit=ARMTORQUELIMIT;
+							g_sArmPars.ArmPWMLimit=ARMPWMLIMIT;
+							g_sArmPars.JointMaxVel=JOINTMAXVEL;
+							g_sArmPars.SP=SP;
+							g_sArmPars.IsGravityCompOn = IsGravityCompOn;
+							for(iJoint=0;iJoint<ARMDOF;iJoint++){
+								g_sArmPars.ModeCtrl[iJoint]=ArmMotorDriveMode[iJoint];
+								g_sArmPars.ArmMimpXYZ[iJoint]=Mimp[iJoint];
+								g_sArmPars.ArmBimpXYZ[iJoint]=Bimp[iJoint];
+								g_sArmPars.ArmKimpXYZ[iJoint]=Kimp[iJoint];
+								g_sArmPars.KpPos[iJoint]=KpPosJoint[iJoint];
+								g_sArmPars.KdPos[iJoint]=KdPosJoint[iJoint];
+								g_sArmPars.FcPos[iJoint]=FcPos[iJoint];
+								g_sArmPars.FmuPos[iJoint]=FmuPos[iJoint];
+								g_sArmPars.KpImp[iJoint]=KpImpJoint[iJoint];
+								g_sArmPars.KdImp[iJoint]=KdImpJoint[iJoint];
+								g_sArmPars.FcImp[iJoint]=FcImp[iJoint];
+								g_sArmPars.FmuImp[iJoint]=FmuImp[iJoint];
+								g_sArmPars.KtaoJnt[iJoint]=KtaoJnt[iJoint];
+								g_sArmPars.ZeroTorqueKtao[iJoint]=ZeroTorqueKtao[iJoint];
+								g_sArmPars.ArmAcc=Tacc[iJoint];
+								g_sArmPars.SensorUseIndex[iJoint] = SensorUseIndex[iJoint];
+								g_sArmPars.ThetaOffset[iJoint] = ThetaOffset[iJoint];
+							}
+
+							LocalTransfer((char *)&g_sArmPars,(char *)HandCmds.hcmd_data,sizeof(SPX_DSP_ARM_PARS));
+							HandCmds.hcmd_status = PLATFORM_STATE_CMD_WAS_DONE;
+							DexAUpdateHandCmds(&HandCmds);
+						break;
+						default:
+						break;
+					}
+				}
+		   
+			
+			
+			for (iJoint=0; iJoint<6; iJoint++)		// for 6 joint Arm.
+			{
+				velinit[iJoint] = TRUE;
+				HallFuseFlag[iJoint] = TRUE;
+
+//				if(SysSchedule.iArmPowerCtrl==1)
+ 					 ArmControl.joint[iJoint].ModeCtrl = ArmMotorDriveMode[ARMDOF-iJoint-1];/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/				
+//				else ArmControl.joint[iJoint].ModeCtrl = 514;/*258---PowerOn&Spwm, 257---PowerOn&Rpwm, PowerOff&SPWM----514, PowerOff&RPWM----513*/
+
+				ArmControl.joint[iJoint].MotPWM = 0x0000;		// Brake Motors.
+				CaliFlag[iJoint] = 0;
+				ArmSense.joint[ARMDOF-iJoint-1].MotorCurrent = 0.0;
+			}
+			g_armInit = TRUE;
+			break;
+	}
+
+	ArmSense.joint[7].JointPosition = qerr[0];
+	ArmSense.joint[7].JointTorque = qerr[1];
+	ArmSense.joint[7].MotorPosition = qerr[2];
+	ArmSense.joint[7].MotorCurrent = qerr[3];
+	ArmSense.joint[7].JointVelocity = qerr[4];
+	ArmSense.joint[7].DesiredAngle = qerr[5];
+
+	return SysSchedule.iArmController;
+}
